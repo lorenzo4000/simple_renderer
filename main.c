@@ -116,21 +116,11 @@ typedef struct Camera {
 	float near_plane_height;
 } Camera;
 
+
+
+// ** Ray tracer **
 int intersections_ray_sphere(Sphere sphere, V3 ray_origin, V3 ray_direction, V3* intersections) {
 	assert(intersections);
-
-	// initialize results
-	intersections[0] = (V3){
-		-INFINITY,
-		-INFINITY,
-		-INFINITY
-	};
-	intersections[1] = (V3){
-		-INFINITY,
-		-INFINITY,
-		-INFINITY
-	};
-	int ret = 0;
 
 	// normalize ray direction vector
 	ray_direction = normalize(ray_direction);
@@ -148,20 +138,17 @@ int intersections_ray_sphere(Sphere sphere, V3 ray_origin, V3 ray_direction, V3*
 	float t1 = -_alpha + sqrt(_delta);
 	float t2 = -_alpha - sqrt(_delta);
 
-	// calculate intersection points
+	int ret = 0;
 	if(t1 >= 0) {
-		intersections[0] = vector_sum(ray_origin, scalar_product(ray_direction, t1));
-		ret++;
+		intersections[ret++] = vector_sum(ray_origin, scalar_product(ray_direction, t1));
 	}
 	if(t2 >= 0) {
-		intersections[1] = vector_sum(ray_origin, scalar_product(ray_direction, t2));
-		ret++;
+		intersections[ret++] = vector_sum(ray_origin, scalar_product(ray_direction, t2));
 	}
 
 	return ret;
 }
 
-// ** Stupid Simple render **
 int render_sphere(Camera camera, Sphere sphere, LightSource light, Pixel* out_buffer, size_t width, size_t height) {
 	assert(out_buffer);
 	assert(width  > 0);
@@ -206,42 +193,46 @@ int render_sphere(Camera camera, Sphere sphere, LightSource light, Pixel* out_bu
 
 			// calculate intersections
 			V3 intersections[2];
-			
-			if(!intersections_ray_sphere(sphere, ray_origin, ray_direction, intersections)) {
-				continue;
-			}
 
-			// we only care about the closer intersection. Only think about the x value for now.
-			V3 closer_intersection = intersections[0];
-			if(intersections[0].x > intersections[1].x) {
-				closer_intersection = intersections[1];
+			V3 closer_intersection;
+			switch(intersections_ray_sphere(sphere, ray_origin, ray_direction, intersections)) {
+				case 0:
+					continue;
+				case 1:
+					closer_intersection = intersections[0];
+					break;
+				case 2:
+					// only think about the x value for now
+					if(intersections[0].x <= intersections[1].x) {
+						closer_intersection = intersections[0];
+					} else {
+						closer_intersection = intersections[1];
+					}
+					break;
+				default:
+					assert(0);
 			}
-			assert(closer_intersection.x != -INFINITY);
 
 			// calculate normal of the sphere at the intersection
 			V3 sphere_intersection_normal = normalize(vector_sub(closer_intersection, sphere.position));
+
+			// note that in this case we get -cos(normal-ray angle)
+			if(dot_product(sphere_intersection_normal, normalize(ray_direction)) > 0.0) {
+				// the surface is facing away
+				continue;
+			}
 			
 			// find intersection -> light source vector
 			ray_direction = vector_sub(light.position, closer_intersection);
 			ray_origin = closer_intersection;
 
-			// check for occlusions (shadows)
-			// intersections_ray_sphere(sphere, ray_origin, ray_direction, intersections);
-
-			// // we check wether there is an intersection that is distant enough from the origin
-			// if(intersections[0].x != -INFINITY && norm(vector_sub(intersections[0], ray_origin)) >= 0.01) {
-			// 	continue;
-			// }
-			// if(intersections[1].x != -INFINITY && norm(vector_sub(intersections[1], ray_origin)) >= 0.01) {
-			// 	continue;
-			// }
+			// TODO: check for occlusions (shadows)
 
 			
-			// now we can do the dot product of the surface normal with the direction of the light
-			// making sure to normalize the direction of the light
+			// note that in this case we get +cos(normal-ray angle)
 			float reflectance = dot_product(sphere_intersection_normal, normalize(ray_direction));
-
 			// assert(reflectance <= 1.0);
+			
 			if(reflectance < 0.0) {
 				// the surface is facing away from the light source
 				continue;
@@ -261,6 +252,7 @@ int render_sphere(Camera camera, Sphere sphere, LightSource light, Pixel* out_bu
 
 	return 0;
 }
+
 
 int main() {
 	// ** X display and window **
@@ -324,7 +316,7 @@ int main() {
 		.radius   = 3.0
 	};
 	LightSource light = {
-		.position  = {0.0, 0.0, 20.0},
+		.position  = {0.0, 20.0, 0.0},
 		.colour = PIXEL_RGB(0x65, 0x32, 0x26),
 		.intensity = 1.0
 	};
@@ -378,13 +370,15 @@ int main() {
 			break;
 		}
 
-		light.position.y = 20.0 * sin(game_time * 2.0 * M_PI * 0.2);
-		light.position.z = 20.0 * cos(game_time * 2.0 * M_PI * 0.2);
-		// light.colour = PIXEL_RGB(
-		// 	(Pixel) ((1.0 + sin(game_time * 2.0 * M_PI * 0.2)) * 0x7f),
-		// 	(Pixel) ((1.0 + cos(game_time * 2.0 * M_PI * 0.2)) * 0x7f),
-		// 	(Pixel) ((1.0 + sin(game_time * 2.0 * M_PI * 0.2)) * 0x7f)
-		// );
+		// light.position.y = 20.0 * sin(game_time * 2.0 * M_PI * 0.2);
+		// light.position.z = 20.0 * cos(game_time * 2.0 * M_PI * 0.2);
+		light.colour = PIXEL_RGB(
+			(Pixel) ((1.0 + sin(game_time * 2.0 * M_PI * 0.8)) * 0x7f),
+			(Pixel) ((1.0 + cos(game_time * 2.0 * M_PI * 0.45)) * 0x7f),
+			(Pixel) ((1.0 + cos(game_time * 2.0 * M_PI * 0.16)) * 0x7f)
+		);
+		sphere.position.z =  (sin(game_time * 2.0 * M_PI * 0.2)) * -3.0;
+
 		render_sphere(cute_camera, sphere, light, pixel_buffer, WIDTH, HEIGHT);
 
 		XPutImage(display, window, gc, image, 0, 0, 0, 0, WIDTH, HEIGHT);
