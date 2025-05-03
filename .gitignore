@@ -1,0 +1,4 @@
+simple_renderer
+*.o
+*.out
+bin
