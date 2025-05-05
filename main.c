@@ -116,6 +116,10 @@ typedef struct Camera {
 	float near_plane_height;
 } Camera;
 
+typedef struct Plane {
+	V3 normal;
+	V3 origin;
+} Plane;
 
 
 // ** Ray tracer **
@@ -147,6 +151,25 @@ int intersections_ray_sphere(Sphere sphere, V3 ray_origin, V3 ray_direction, V3*
 	}
 
 	return ret;
+}
+
+int intersection_ray_plane(Plane plane, V3 ray_origin, V3 ray_direction, V3* intersection) {
+	assert(intersection);
+
+	// normalize ray direction vector
+	ray_direction = normalize(ray_direction);
+
+	float cos_au = dot_product(plane.normal, ray_direction);
+	if(!cos_au) {
+		// plane and ray are parallel
+		return 0;
+	}
+
+	float cos_aoo = dot_product(plane.normal, vector_sub(plane.origin, ray_origin));
+	float t = cos_aoo / cos_au;
+
+	intersection[0] = vector_sum(ray_origin, scalar_product(ray_direction, t));
+	return 1;
 }
 
 int render_sphere(Camera camera, Sphere sphere, LightSource light, Pixel* out_buffer, size_t width, size_t height) {
@@ -191,6 +214,7 @@ int render_sphere(Camera camera, Sphere sphere, LightSource light, Pixel* out_bu
 				near_plane_y
 			};
 
+			// ** Sphere **
 			// calculate intersections
 			V3 intersections[2];
 
