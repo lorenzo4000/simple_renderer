@@ -1,7 +1,8 @@
 #!/bin/bash
 
-gcc -Wall -Wextra \
-	-ggdb		  \
+CFLAGS="-Wall -Wextra -ggdb"
+
+gcc $CFLAGS		  \
 	./*.c -I./ 	  \
 	-lX11		  \
 	-lm			  \
