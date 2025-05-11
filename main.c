@@ -441,7 +441,7 @@ int main() {
 	};
 	scene[objects_in_scene++] = (Object){
 		.type = LIGHT_SOURCE,
-		.position  = {-10.0, 20.0, -20.0},
+		.position  = {-10.0, 0.5, -20.0},
 		.light_source = (LightSource){
 			.colour = PIXEL_RGB(0x65, 0x32, 0x26),
 			.intensity = 1.0
@@ -459,6 +459,34 @@ int main() {
 		.position = {20.0, 0.0, 0.0},
 		.sphere = (Sphere){
 			.radius = 3.0,
+		},
+	};
+	scene[objects_in_scene++] = (Object){
+		.type = PLANE,
+		.position = {30.0, 0.0, 0.0},
+		.plane = (Plane){
+			.normal = {-1.0, 0.0, 0.0},
+		},
+	};
+	scene[objects_in_scene++] = (Object){
+		.type = PLANE,
+		.position = {0.0, 0.0, -25.0},
+		.plane = (Plane){
+			.normal = {0.0, 0.0, 1.0},
+		},
+	};
+	scene[objects_in_scene++] = (Object){
+		.type = PLANE,
+		.position = {0.0, -7.0, 0.0},
+		.plane = (Plane){
+			.normal = {0.0, 1.0, 0.0},
+		},
+	};
+	scene[objects_in_scene++] = (Object){
+		.type = PLANE,
+		.position = {0.0, 7.0, 0.0},
+		.plane = (Plane){
+			.normal = {0.0, -1.0, 0.0},
 		},
 	};
 
@@ -509,14 +537,6 @@ int main() {
 			perror("poll()");
 			break;
 		}
-
-		// light.position.y = 20.0 * sin(game_time * 2.0 * M_PI * 0.2);
-		// light.position.z = 20.0 * cos(game_time * 2.0 * M_PI * 0.2);
-		// light.colour = PIXEL_RGB(
-		// 	(Pixel) ((1.0 + sin(game_time * 2.0 * M_PI * 0.8)) * 0x7f),
-		// 	(Pixel) ((1.0 + cos(game_time * 2.0 * M_PI * 0.45)) * 0x7f),
-		// 	(Pixel) ((1.0 + cos(game_time * 2.0 * M_PI * 0.16)) * 0x7f)
-		// );
 
 		scene[3].position.z =  (sin(game_time * 2.0 * M_PI * 0.2)) * (scene[2].position.z - scene[3].sphere.radius);
 		render_scene(scene, objects_in_scene, pixel_buffer, WIDTH, HEIGHT);
