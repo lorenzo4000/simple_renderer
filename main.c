@@ -1,14 +1,21 @@
 #include <X11/Xlib.h>
+
+#include <stdlib.h>
 #include <stdio.h>
-#include <assert.h>
-#include <math.h>
 #include <stdint.h>
 #include <unistd.h>
-#include <poll.h>
-#include <time.h>
+#include <assert.h>
+
+#include <math.h>
 #include <string.h>
 
-// #define MAX_FPS 5
+#include <poll.h>
+#include <time.h>
+
+#include <pthread.h>
+#include <semaphore.h>
+
+#define MAX_FPS 15
 
 #define WIDTH  800
 #define HEIGHT 800
@@ -376,7 +383,205 @@ int render_scene(Object* scene, size_t scene_size, Pixel* out_buffer, size_t wid
 }
 
 
+int render_scene_threaded(Object* scene, size_t scene_size, Pixel* out_buffer, size_t width, size_t height, int n_threads, int thread) {
+	assert(scene);
+	assert(out_buffer);
+	assert(width  > 0);
+	assert(height > 0);
+
+	// search for camera and light source in the scene
+	LightSource light;
+	V3 light_position;
+	Camera camera;
+	V3 camera_position;
+
+	int found_light, found_camera;
+	for(size_t i = 0; i < scene_size; i++) {
+		if(scene[i].type == LIGHT_SOURCE) {
+			light = scene[i].light_source;
+			light_position = scene[i].position;
+			found_light = 1;
+		} else 
+		if(scene[i].type == CAMERA) {
+			camera = scene[i].camera;
+			camera_position = scene[i].position;
+			found_camera = 1;
+		}
+	}
+	assert(found_light && found_camera);
+
+	// TODO: world coordinates
+	// for now we just assert that the camera position is (0, 0, 0), 
+	// because we haven't figured out actual world coordinates yet.
+	assert(!(
+		camera_position.x ||
+		camera_position.y ||
+		camera_position.z
+	));
+
+
+	// boundary planes
+	V3 near_plane_center = {
+		camera.near_plane_distance,
+		0,
+		0
+	};
+
+
+	// TODO: support more thread configurations
+	assert(n_threads == 16); 
+
+	assert(thread >= 0);
+	assert(thread < n_threads);
+
+	size_t grid_w = 4;
+	size_t grid_h = 4;
+
+	// assuming that you can divide the screen by 4
+	size_t grid_cell_w = width  / grid_w;
+	size_t grid_cell_h = height / grid_h;
+	
+	size_t i0 = (thread / grid_w) * grid_cell_h;
+	size_t j0 = (thread % grid_w) * grid_cell_w;
+
+	// for every pixel (i, j)
+	for(size_t i = i0; i < i0 + grid_cell_h; i++) {
+		for(size_t j = j0; j < j0 + grid_cell_w; j++) {
+			out_buffer[i * width + j] = PIXEL_RGB(0x00, 0x00, 0x00);
+
+			// figure out where (i, j) is on the near plane
+			float near_plane_i = (float)i / height * camera.near_plane_height;
+			float near_plane_j = (float)j / width  * camera.near_plane_width;
+			float near_plane_x = near_plane_j - camera.near_plane_width  / 2.0;
+			float near_plane_y = near_plane_i - camera.near_plane_height / 2.0;
+
+			// ray 
+			Ray ray = {
+				.origin = camera_position,
+				.direction = (V3){
+					near_plane_center.x,
+					near_plane_x,
+					near_plane_y
+				},
+			};
+
+			// find closest intersection 
+			ssize_t closest_intersection_object = -1;
+			V3 closest_intersection = {
+				camera.far_plane_distance,
+				0,
+				0,
+			};
+			for(size_t obj = 0; obj < scene_size; obj++) {
+				if(scene[obj].type == SPHERE || scene[obj].type == PLANE) {
+					V3 intersections[MAX_OBJECT_INTERSECTIONS];
+					int n_intersections = ray_object_intersect(scene[obj], ray, intersections);
+					assert(n_intersections >= 0);
+					assert(n_intersections <= MAX_OBJECT_INTERSECTIONS);
+
+					for(size_t intersection = 0 ; intersection < (size_t)n_intersections; intersection++) {
+						if(closest_intersection.x > intersections[intersection].x) {
+							closest_intersection_object = obj;
+							closest_intersection = intersections[intersection];
+						}
+					}
+				}
+			}
+			if(closest_intersection_object < 0) continue;
+
+			V3 intersection_normal;
+			switch(scene[closest_intersection_object].type) {
+				case SPHERE: 
+					intersection_normal = normalize(vector_sub(closest_intersection, scene[closest_intersection_object].position)); 
+					break;
+				case PLANE:  
+					intersection_normal = scene[closest_intersection_object].plane.normal; 
+					break;
+				default: 
+					assert(0 && "Unreachable");
+			}
+
+			if(dot_product(intersection_normal, normalize(ray.direction)) > 0.0) {
+				// the surface is facing away
+				continue;
+			}
+
+			// find intersection -> light source vector
+			Ray ray1 = {
+				.direction = vector_sub(light_position, closest_intersection),
+				.origin = closest_intersection,
+			};
+
+			// check for occlusions (shadows)
+			int occluded = 0;
+			for(size_t obj = 0; obj < scene_size; obj++) {
+				if(obj != (size_t)closest_intersection_object && (scene[obj].type == SPHERE || scene[obj].type == PLANE)) {
+					V3 intersections[MAX_OBJECT_INTERSECTIONS];
+					int n_intersections = ray_object_intersect(scene[obj], ray1, intersections);
+					assert(n_intersections >= 0);
+					assert(n_intersections <= MAX_OBJECT_INTERSECTIONS);
+
+					for(size_t intersection = 0 ; intersection < (size_t)n_intersections; intersection++) {
+						if(point_in_segment(intersections[intersection], closest_intersection, light_position)) {
+							// it is an occlusion
+							occluded = 1;
+							break;
+						}
+					}
+				}
+				if(occluded) break;
+			}
+			if(occluded) continue;
+		
+			float reflectance = dot_product(intersection_normal, normalize(ray1.direction));
+			// assert(reflectance <= 1.0);
+			
+			if(reflectance < 0.0) {
+				// the surface is facing away from the light source
+				continue;
+			}
+
+			// assert(light.intensity <= 1.0 && light.intensity >= 0.0);
+			Pixel p = PIXEL_RGB(
+				(Pixel) (PIXEL_R(light.colour) * reflectance * light.intensity),
+				(Pixel) (PIXEL_G(light.colour) * reflectance * light.intensity),
+				(Pixel) (PIXEL_B(light.colour) * reflectance * light.intensity)
+			);
+
+			out_buffer[i * width + j] = p;
+		}
+	}
+	
+
+	return 0;
+}
+
+#define RENDERING_THREADS 16
 #define SCENE_MAX_OBJECTS 1024
+
+int objects_in_scene = 0;
+Object scene[SCENE_MAX_OBJECTS];
+
+sem_t sem_render_thread_start;
+sem_t sem_render_thread_end;
+void* new_render_thread(void* arg) {
+	int i = *(int*) arg;
+	assert(i >= 0);
+
+	printf("thread %d created\n", i);
+
+	while(1) {
+		sem_wait(&sem_render_thread_start);
+		sem_wait(&sem_render_thread_end);
+
+		render_scene_threaded(scene, objects_in_scene, pixel_buffer, WIDTH, HEIGHT, RENDERING_THREADS, i);
+
+		sem_post(&sem_render_thread_end);
+	}
+
+	return NULL;
+}
+
 int main() {
 	// ** X display and window **
     Display *display;
@@ -426,9 +631,6 @@ int main() {
 
 
 	// create a scene
-	int objects_in_scene = 0;
-	Object scene[SCENE_MAX_OBJECTS];
-
 	scene[objects_in_scene++] = (Object){
 		.type = CAMERA,
 		.position = (V3){0, 0, 0},
@@ -490,6 +692,23 @@ int main() {
 		},
 	};
 
+	// ** Rendering threads **
+	sem_init(&sem_render_thread_start, 0, 0);
+	sem_init(&sem_render_thread_end,   0, RENDERING_THREADS);
+
+	pthread_t rendering_threads[RENDERING_THREADS];
+	int rendering_threads_ids[RENDERING_THREADS];
+	for(int i = 0; i < RENDERING_THREADS; i++) {
+		rendering_threads_ids[i] = i;
+
+		assert(!pthread_create(
+			&rendering_threads[i],
+			NULL,
+			new_render_thread,
+			(void*) &rendering_threads_ids[i]
+		));
+	}
+
 	// ** Event loop **
     XMapWindow(display, window);
 
@@ -504,57 +723,76 @@ int main() {
 	};
 
 	// time setup
-	struct timespec lt, ct;
+	struct timespec frame_end, frame_start;
 	double dt, game_time;
 
-	clock_gettime(CLOCK_MONOTONIC, &lt);
+	clock_gettime(CLOCK_MONOTONIC, &frame_start);
 
 	int should_quit = 0;
 	while (!should_quit) {
-		// elapsed time
-		clock_gettime(CLOCK_MONOTONIC, &ct);
-		dt = (ct.tv_sec - lt.tv_sec) + (ct.tv_nsec - lt.tv_nsec) / 1e9;
-		lt = ct;
+		{	
+			while(XPending(display)) {
+				XEvent event;
+				XNextEvent(display, &event);
 
-		game_time += dt;
-	
-		printf("FPS : %f\n", 1.0 / dt);
-			
-		while(XPending(display)) {
-			XEvent event;
-			XNextEvent(display, &event);
-
-			switch (event.type) {
-				case ClientMessage:
-					if ((Atom)event.xclient.data.l[0] == wm_delete_window)
-						should_quit = 1;
-					break;
+				switch (event.type) {
+					case ClientMessage:
+						if ((Atom)event.xclient.data.l[0] == wm_delete_window)
+							should_quit = 1;
+						break;
+				}
 			}
+
+			int num_ready = poll(&xfd, 1, 0);
+			if(num_ready < 0) {
+				perror("poll()");
+				break;
+			}
+
+			scene[3].position.z =  (sin(game_time * 2.0 * M_PI * 0.2)) * (scene[2].position.z - scene[3].sphere.radius);
+			// render_scene(scene, objects_in_scene, pixel_buffer, WIDTH, HEIGHT);
+
+			// start all the render threads
+			for(int i = 0; i < RENDERING_THREADS; i++) {
+				sem_post(&sem_render_thread_start);
+			}
+
+			// busy wait for all the render threads to end
+			// TODO: figure out how to not busy wait
+			int ended;
+			do {
+				sem_getvalue(&sem_render_thread_end, &ended);
+				assert(ended >= 0);
+			} while(ended < RENDERING_THREADS);
+
+
+			XPutImage(display, window, gc, image, 0, 0, 0, 0, WIDTH, HEIGHT);
+			XFlush(display);
 		}
 
-		int num_ready = poll(&xfd, 1, 15);
-		if(num_ready < 0) {
-			perror("poll()");
-			break;
-		}
-
-		scene[3].position.z =  (sin(game_time * 2.0 * M_PI * 0.2)) * (scene[2].position.z - scene[3].sphere.radius);
-		render_scene(scene, objects_in_scene, pixel_buffer, WIDTH, HEIGHT);
-
-		XPutImage(display, window, gc, image, 0, 0, 0, 0, WIDTH, HEIGHT);
-		XFlush(display);
+		clock_gettime(CLOCK_MONOTONIC, &frame_end);
+		dt = (frame_end.tv_sec - frame_start.tv_sec) + (frame_end.tv_nsec - frame_start.tv_nsec) / 1e9;
 
 		#ifdef MAX_FPS
 		{
-			double time_to_sleep = 1.0 / MAX_FPS - dt;
+			double time_to_sleep = (double)1.0 / (double)MAX_FPS - dt;
 			struct timespec ts;
 			if(time_to_sleep > 0) {
 				ts.tv_sec  = (time_t)time_to_sleep;
 				ts.tv_nsec = (long)((time_to_sleep - ts.tv_sec) * 1e9);
 				nanosleep(&ts, NULL);
+
+				// get time after sleep
+				clock_gettime(CLOCK_MONOTONIC, &frame_end);
+				dt = (frame_end.tv_sec - frame_start.tv_sec) + (frame_end.tv_nsec - frame_start.tv_nsec) / 1e9;
 			}
+			
 		}
 		#endif
+			
+		frame_start = frame_end;
+		game_time += dt;
+		printf("FPS : %f\n", (double)1.0 / dt);
 	}
 
 
